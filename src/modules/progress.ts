@@ -107,7 +107,7 @@ export class ProgressManager {
   log(message: string): void {
     if (this.showProgress && (this.overallBar || this.chunkBar)) {
       const bar = this.overallBar ?? this.chunkBar!;
-      bar.log(`ℹ️  ${message}\n`);
+      (bar as any).log(`ℹ️  ${message}\n`);
     } else {
       console.log(`ℹ️  ${message}`);
     }

@@ -25,11 +25,14 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "cli-progress": "^3.12.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
     "flac-bindings": "^4.1.0",
     "fluent-ffmpeg": "^2.1.2",
+    "groq-sdk": "^1.1.1",
     "node-wav": "^0.0.2",
     "zod": "^3.22.0"
   },

@@ -90,12 +90,17 @@ export const transcribeCommand = new Command('transcribe')
   .option('-l, --language <code>', 'Language code (ko, en, ja, etc.) - auto-detect if not specified')
   .option('-t, --translate', 'Translate to English')
   .option('--no-progress', 'Disable progress bar')
-  .option('--beam-size <n>', 'Beam size for decoding', '5')
   .action(async (input, options) => {
     const progress = new ProgressManager(options.progress);
 
     if (!hasEnvFile()) {
       progress.warn('No .env file found. Run "meeting-transcriber init" to create one.');
+    }
+
+    const config = getConfig();
+    if (!config.GROQ_API_KEY) {
+      progress.error('GROQ_API_KEY is not set. Add it to your .env file: GROQ_API_KEY=gsk_xxxxx');
+      process.exit(1);
     }
 
     if (!fileExists(input)) {
@@ -127,7 +132,6 @@ export const transcribeCommand = new Command('transcribe')
       const sttOptions: TranscribeOptions = {
         language: options.language || undefined,
         task: options.translate ? 'translate' : 'transcribe',
-        beamSize: parseInt(options.beamSize, 10) || 5,
       };
 
       const sttManager = new STTManager(options.model, progress);
@@ -172,11 +176,7 @@ export const transcribeCommand = new Command('transcribe')
         }
       } catch (err: any) {
         const msg = err?.message || String(err);
-        if (msg.includes('Python 3 is required') || msg.includes('pip install faster-whisper')) {
-          progress.error(msg);
-        } else {
-          progress.error(`Transcription failed: ${msg}`);
-        }
+        progress.error(`Transcription failed: ${msg}`);
         process.exit(1);
       } finally {
         await sttManager.dispose();

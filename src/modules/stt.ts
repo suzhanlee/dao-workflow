@@ -1,12 +1,19 @@
-import { spawn } from 'child_process';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { createReadStream, statSync } from 'fs';
+import { unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { randomBytes } from 'crypto';
+import Groq from 'groq-sdk';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { getConfig } from '../utils/config.js';
 import { ProgressManager } from './progress.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const SCRIPT_PATH = join(__dirname, '..', 'scripts', 'transcribe.py');
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
+
+const MAX_FILE_SIZE = 24 * 1024 * 1024; // 24MB (safe margin under Groq's 25MB limit)
 
 /**
  * Transcription options
@@ -14,7 +21,6 @@ const SCRIPT_PATH = join(__dirname, '..', 'scripts', 'transcribe.py');
 export interface TranscribeOptions {
   language?: string;
   task?: 'transcribe' | 'translate';
-  beamSize?: number;
 }
 
 /**
@@ -36,143 +42,146 @@ export interface TranscriptionResult {
 }
 
 /**
- * Detect available Python executable (python3 first, then python)
+ * Get audio duration in seconds using ffprobe
  */
-async function detectPython(configPath?: string): Promise<string> {
-  if (configPath) return configPath;
-
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const execFileAsync = promisify(execFile);
-
-  for (const candidate of ['python3', 'python']) {
-    try {
-      await execFileAsync(candidate, ['--version']);
-      return candidate;
-    } catch {
-      // try next
-    }
-  }
-
-  throw new Error(
-    'Python 3 is required. Install from python.org, then run: pip install faster-whisper'
-  );
+function getAudioDuration(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) return reject(new Error(`ffprobe failed: ${err.message}`));
+      resolve(metadata.format.duration || 0);
+    });
+  });
 }
 
 /**
- * Verify faster-whisper is installed
+ * Extract a time segment from an audio file as MP3 (small, Whisper-compatible)
  */
-async function checkFasterWhisper(python: string): Promise<void> {
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const execFileAsync = promisify(execFile);
-
-  try {
-    await execFileAsync(python, ['-c', 'import faster_whisper']);
-  } catch {
-    throw new Error('Run: pip install faster-whisper');
-  }
+function extractChunk(
+  filePath: string,
+  outputPath: string,
+  startSec: number,
+  durationSec: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ffmpeg(filePath)
+      .setStartTime(startSec)
+      .setDuration(durationSec)
+      .audioCodec('libmp3lame')
+      .audioBitrate('64k')
+      .audioFrequency(16000)
+      .audioChannels(1)
+      .output(outputPath)
+      .on('end', () => resolve())
+      .on('error', (err) => reject(new Error(`ffmpeg chunk failed: ${err.message}`)))
+      .run();
+  });
 }
 
 /**
- * STT manager using faster-whisper via Python subprocess
+ * STT manager using Groq Whisper API
  */
 export class STTManager {
   private modelName: string;
   private progress: ProgressManager;
+  private groq: Groq;
 
   constructor(modelName?: string, progress?: ProgressManager) {
     const config = getConfig();
     this.modelName = modelName || config.WHISPER_MODEL;
     this.progress = progress || new ProgressManager();
+    this.groq = new Groq({ apiKey: config.GROQ_API_KEY });
   }
 
   /**
-   * Transcribe an audio file using faster-whisper
+   * Send a single file to Groq and return the result
+   */
+  private async transcribeSingleFile(
+    filePath: string,
+    options: TranscribeOptions,
+    timeOffset: number = 0,
+  ): Promise<TranscriptionResult> {
+    const response = await this.groq.audio.transcriptions.create({
+      file: createReadStream(filePath),
+      model: this.modelName,
+      language: options.language,
+      response_format: 'verbose_json',
+      ...(options.task === 'translate' ? { task: 'translate' } : {}),
+    }) as any;
+
+    const segments: Segment[] = (response.segments || []).map((seg: any) => ({
+      start: seg.start + timeOffset,
+      end: seg.end + timeOffset,
+      text: seg.text,
+    }));
+
+    return {
+      text: response.text || '',
+      language: response.language || 'unknown',
+      segments,
+    };
+  }
+
+  /**
+   * Transcribe an audio file using Groq Whisper API.
+   * Automatically splits large files into chunks.
    */
   async transcribeFile(filePath: string, options: TranscribeOptions = {}): Promise<TranscriptionResult> {
     const config = getConfig();
+    const fileSize = statSync(filePath).size;
 
-    const python = await detectPython(config.PYTHON_PATH || undefined);
-    await checkFasterWhisper(python);
-
-    const args = [
-      SCRIPT_PATH,
-      '--file', filePath,
-      '--model', this.modelName,
-      '--task', options.task || 'transcribe',
-      '--beam-size', String(options.beamSize || 5),
-    ];
-
-    if (options.language) {
-      args.push('--language', options.language);
+    if (fileSize <= MAX_FILE_SIZE) {
+      // Small enough — send directly
+      this.progress.info(`Running Groq Whisper API (model: ${this.modelName})...`);
+      this.progress.initChunk();
+      try {
+        const result = await this.transcribeSingleFile(filePath, options);
+        this.progress.completeChunk();
+        return result;
+      } catch (err) {
+        this.progress.completeChunk();
+        throw err;
+      }
     }
 
-    this.progress.info(`Running faster-whisper (model: ${this.modelName})...`);
-    this.progress.initChunk();
+    // File too large — split into chunks
+    const chunkDurationSec = config.CHUNK_DURATION_MINUTES * 60;
+    const totalDuration = await getAudioDuration(filePath);
+    const numChunks = Math.ceil(totalDuration / chunkDurationSec);
 
-    return new Promise((resolve, reject) => {
-      const child = spawn(python, args, {
-        env: { ...process.env },
-      });
+    this.progress.info(
+      `File is ${(fileSize / 1024 / 1024).toFixed(1)}MB — splitting into ${numChunks} chunks (${config.CHUNK_DURATION_MINUTES}min each)...`,
+    );
 
-      let stdout = '';
-      let stderr = '';
+    const results: TranscriptionResult[] = [];
+    const tempFiles: string[] = [];
 
-      child.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
+    try {
+      for (let i = 0; i < numChunks; i++) {
+        const startSec = i * chunkDurationSec;
+        const duration = Math.min(chunkDurationSec, totalDuration - startSec);
+        const tmpPath = join(tmpdir(), `mt-chunk-${randomBytes(6).toString('hex')}.mp3`);
+        tempFiles.push(tmpPath);
 
-      child.stderr.on('data', (data: Buffer) => {
-        const lines = data.toString().split('\n').filter(l => l.trim());
-        for (const line of lines) {
-          try {
-            const msg = JSON.parse(line);
-            if (msg.type === 'status') {
-              this.progress.log(msg.message);
-            } else if (msg.type === 'transcribing') {
-              this.progress.updateChunk(msg.progress);
-            }
-          } catch {
-            stderr += line + '\n';
-          }
-        }
-      });
+        this.progress.info(`Chunk ${i + 1}/${numChunks}: extracting ${Math.round(startSec / 60)}m–${Math.round((startSec + duration) / 60)}m...`);
+        await extractChunk(filePath, tmpPath, startSec, duration);
 
-      child.on('close', (code) => {
-        this.progress.completeChunk();
-
-        if (!stdout.trim()) {
-          return reject(new Error(`Python process exited with no output. stderr: ${stderr}`));
-        }
-
-        let result: any;
+        this.progress.info(`Chunk ${i + 1}/${numChunks}: transcribing...`);
+        this.progress.initChunk();
         try {
-          result = JSON.parse(stdout.trim());
-        } catch {
-          return reject(new Error(`Failed to parse Python output: ${stdout}`));
+          const result = await this.transcribeSingleFile(tmpPath, options, startSec);
+          this.progress.completeChunk();
+          results.push(result);
+        } catch (err: any) {
+          this.progress.completeChunk();
+          throw new Error(`Chunk ${i + 1}/${numChunks} failed: ${err?.message || JSON.stringify(err)}`);
         }
+      }
+    } finally {
+      // Clean up temp files
+      await Promise.all(tempFiles.map(f => unlink(f).catch(() => {})));
+    }
 
-        if (result.error) {
-          return reject(new Error(result.error));
-        }
-
-        if (code !== 0) {
-          return reject(new Error(`Python exited with code ${code}. stderr: ${stderr}`));
-        }
-
-        resolve({
-          text: result.text || '',
-          language: result.language || 'unknown',
-          segments: result.segments || [],
-        });
-      });
-
-      child.on('error', (err) => {
-        this.progress.completeChunk();
-        reject(new Error(`Failed to spawn Python process: ${err.message}`));
-      });
-    });
+    return this.mergeTranscripts(results);
   }
 
   /**
@@ -182,20 +191,10 @@ export class STTManager {
     const mergedText = results.map(r => r.text).join(' ').replace(/\s+/g, ' ').trim();
 
     const mergedSegments: Segment[] = [];
-    let offset = 0;
 
     for (const result of results) {
       for (const segment of result.segments) {
-        mergedSegments.push({
-          start: segment.start + offset,
-          end: segment.end + offset,
-          text: segment.text,
-        });
-      }
-
-      if (result.segments.length > 0) {
-        const lastSegment = result.segments[result.segments.length - 1];
-        offset = lastSegment.end;
+        mergedSegments.push(segment);
       }
     }
 

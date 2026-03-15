@@ -13,9 +13,12 @@ dotenv.config({ path: join(projectRoot, '.env') });
 
 // Configuration Schema with Zod
 const configSchema = z.object({
+  // Groq API Key
+  GROQ_API_KEY: z.string().min(1),
+
   // Whisper Model Configuration
-  WHISPER_MODEL: z.enum(['tiny', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1', 'large-v2', 'large-v3', 'large'])
-    .default('large-v3'),
+  WHISPER_MODEL: z.enum(['whisper-large-v3', 'whisper-large-v3-turbo'])
+    .default('whisper-large-v3'),
 
   // Audio Processing Configuration
   CHUNK_DURATION_MINUTES: z.string().transform(Number)
@@ -29,9 +32,6 @@ const configSchema = z.object({
   // Progress Bar Configuration
   SHOW_PROGRESS: z.string().transform(val => val.toLowerCase() === 'true')
     .default('true'),
-
-  // Python executable path (empty = auto-detect python3/python)
-  PYTHON_PATH: z.string().default(''),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -42,12 +42,12 @@ export type Config = z.infer<typeof configSchema>;
  */
 export function loadConfig(): Config {
   const rawConfig = {
-    WHISPER_MODEL: process.env.WHISPER_MODEL || 'large-v3',
+    GROQ_API_KEY: process.env.GROQ_API_KEY || '',
+    WHISPER_MODEL: process.env.WHISPER_MODEL || 'whisper-large-v3',
     CHUNK_DURATION_MINUTES: process.env.CHUNK_DURATION_MINUTES || '30',
     OUTPUT_DIR: process.env.OUTPUT_DIR || './transcripts',
     DEFAULT_OUTPUT_FORMAT: process.env.DEFAULT_OUTPUT_FORMAT || 'txt',
     SHOW_PROGRESS: process.env.SHOW_PROGRESS || 'true',
-    PYTHON_PATH: process.env.PYTHON_PATH || '',
   };
 
   try {
