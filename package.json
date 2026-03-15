@@ -1,0 +1,46 @@
+{
+  "name": "meeting-transcriber",
+  "version": "1.0.0",
+  "description": "CLI tool for automatic meeting transcription using STT",
+  "main": "dist/index.js",
+  "bin": {
+    "meeting-transcriber": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "init": "tsx src/index.ts init",
+    "transcribe": "tsx src/index.ts transcribe"
+  },
+  "keywords": [
+    "stt",
+    "speech-to-text",
+    "transcription",
+    "whisper",
+    "meeting",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cli-progress": "^3.12.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.0",
+    "flac-bindings": "^4.1.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "node-wav": "^0.0.2",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.5",
+    "@types/fluent-ffmpeg": "^2.1.24",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
