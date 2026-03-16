@@ -13,7 +13,7 @@ validate_prompt: |
   다음 항목이 포함되어야 합니다:
   1. 오디오 파일 유효성 검사 (존재 여부, 지원 형식)
   2. CLI 실행: npm run transcribe -- <input>
-  3. transcript.txt 생성 및 비어있지 않음 확인
+  3. transcript.json 생성 및 비어있지 않음 확인
   4. template.md 성공적으로 읽기
   5. meeting_notes.md가 transcripts/에 생성됨
   6. 파일 경로와 통계 정보가 포함된 성공 메시지
@@ -76,15 +76,15 @@ test -f "$AUDIO_PATH" || echo "File not found"
 
 **예상 텍스트 경로 계산:**
 ```bash
-TRANSCRIPT_PATH="transcripts/${AUDIO_BASENAME}.txt"
+TRANSCRIPT_PATH="transcripts/${AUDIO_BASENAME}.json"
 ```
 
 **기존 텍스트 확인:**
-`transcripts/${AUDIO_BASENAME}.txt`가 존재하는 경우:
+`transcripts/${AUDIO_BASENAME}.json`이 존재하는 경우:
 
 ```
 AskUserQuestion(
-  question: "transcripts/${AUDIO_BASENAME}.txt 이미 존재합니다. 어떻게 할까요?",
+  question: "transcripts/${AUDIO_BASENAME}.json 이미 존재합니다. 어떻게 할까요?",
   header: "기존 텍스트 발견",
   options: [
     { label: "재사용", description: "기존 텍스트로 회의록 생성" },
@@ -100,7 +100,7 @@ AskUserQuestion(
 
 **CLI 실행:**
 ```bash
-npm run transcribe -- "$AUDIO_PATH" --format txt
+npm run transcribe -- "$AUDIO_PATH" --format json
 ```
 
 **출력 확인:**
@@ -133,10 +133,12 @@ fi
 
 ### 작업 내용
 
-**텍스트 읽기:**
-```bash
-TRANSCRIPT_CONTENT=$(cat "$TRANSCRIPT_PATH")
-```
+**JSON 읽기 및 파싱:**
+- Read 도구로 `$TRANSCRIPT_PATH` (`.json`) 파일 읽기
+- JSON 구조: `{ "text": "전체 텍스트", "segments": [...], "language": "ko" }`
+- `text` 필드 → `TRANSCRIPT_CONTENT` (회의록 생성에 사용)
+- `segments` 필드 → 타임스탬프 정보 (필요 시 활용)
+- `language` 필드 → `LANGUAGE` (통계 표시에 사용)
 
 **템플릿 읽기:**
 ```bash
@@ -233,7 +235,7 @@ mkdir -p "transcripts"
 | 출력 디렉터리 | `transcripts/` |
 | 출력 파일명 패턴 | `{basename}_meeting_notes.md` |
 | 지원 오디오 형식 | wav, mp3, m4a, flac, ogg, aac, wma |
-| 텍스트 파일 패턴 | `{basename}.txt` |
+| 텍스트 파일 패턴 | `{basename}.json` |
 | 오늘 날짜 | 2026-03-15 |
 
 ### CLI 출력 포맷
